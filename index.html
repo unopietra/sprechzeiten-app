@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Sprechzeiten</title>
+<style>
+  :root {
+    --bg: #101418;
+    --card: #1b2129;
+    --text: #eef2f6;
+    --muted: #8a97a5;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    touch-action: manipulation;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+  }
+  header h1 { font-size: 1.15rem; margin: 0; font-weight: 600; }
+  .total { text-align: right; margin-right: auto; margin-left: 20px; }
+  .total .label { color: var(--muted); font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; }
+  .total .value { font-variant-numeric: tabular-nums; font-size: 1.15rem; font-weight: 600; }
+  .icon-btn {
+    background: var(--card);
+    color: var(--text);
+    border: none;
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 1rem;
+    cursor: pointer;
+  }
+  .icon-btn:active { filter: brightness(1.3); }
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    grid-auto-rows: 1fr;
+    gap: 12px;
+    padding: 0 16px 16px;
+    min-height: 0;
+  }
+  @media (orientation: landscape) and (min-width: 700px) {
+    main { grid-template-columns: repeat(3, 1fr); }
+  }
+  .person {
+    position: relative;
+    border: 3px solid #2a3340;
+    border-radius: 16px;
+    background: var(--card);
+    color: inherit;
+    font: inherit;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    align-items: flex-start;
+    gap: 6px;
+    cursor: pointer;
+    overflow: hidden;
+    transition: border-color .15s, box-shadow .15s, filter .15s;
+  }
+  .personActive {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--c) 35%, transparent), 0 0 28px color-mix(in srgb, var(--c) 30%, transparent);
+    filter: brightness(1.12);
+  }
+  .nameInput {
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text);
+    font: inherit;
+    font-weight: 700;
+    font-size: clamp(1.1rem, 3.5vh, 1.6rem);
+    width: 100%;
+    pointer-events: auto;
+  }
+  .nameInput::placeholder { color: var(--muted); opacity: .6; }
+  .clock {
+    font-variant-numeric: tabular-nums;
+    font-size: clamp(1.6rem, 6vh, 3rem);
+    font-weight: 700;
+    line-height: 1;
+    opacity: .95;
+  }
+  .sum {
+    color: var(--muted);
+    font-size: clamp(.85rem, 2.4vh, 1.1rem);
+    font-variant-numeric: tabular-nums;
+  }
+  .active-label {
+    position: absolute;
+    top: 12px;
+    right: 14px;
+    font-size: .72rem;
+    font-weight: 700;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--c);
+    display: none;
+  }
+  .personActive .active-label { display: block; animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .bar { position: absolute; left: 0; bottom: 0; height: 5px; width: 0; background: var(--c); }
+  dialog {
+    background: var(--card);
+    color: var(--text);
+    border: 1px solid #2a3340;
+    border-radius: 16px;
+    padding: 22px;
+    max-width: 340px;
+    width: calc(100% - 40px);
+  }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  dialog h2 { margin: 0 0 8px; font-size: 1.15rem; }
+  dialog p { margin: 0 0 18px; color: var(--muted); }
+  dialog .row { display: flex; gap: 10px; justify-content: flex-end; }
+  dialog .icon-btn:nth-child(2) { background: #b3261e; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sprechzeiten</h1>
+  <div class="total">
+    <div class="label">Gesamt</div>
+    <div class="value" id="total">00:00</div>
+  </div>
+  <button class="icon-btn" id="resetBtn" title="Alle Zeiten zurücksetzen">⟲</button>
+</header>
+
+<main id="grid"></main>
+
+<dialog id="confirmReset">
+  <h2>Zeiten zurücksetzen?</h2>
+  <p>Alle aufsummierten Zeiten werden auf 00:00 gesetzt. Die laufende Zeit wird gestoppt.</p>
+  <div class="row">
+    <button class="icon-btn" id="cancelReset">Abbrechen</button>
+    <button class="icon-btn" id="doReset">Zurücksetzen</button>
+  </div>
+</dialog>
+
+<script>
+const COLORS = ["#f9a825", "#e53935", "#43a047", "#1e88e5", "#8e24aa", "#f06292"];
+const PERSON_KEY = "sprechzeiten.personen.v1";
+
+const state = {
+  personen: load() || COLORS.map((c, i) => ({ name: "Person " + (i + 1), total: 0 })),
+};
+
+let running = null; // Index der aktiven Person
+let startTs = 0;
+
+function load() {
+  try {
+    const data = JSON.parse(localStorage.getItem(PERSON_KEY));
+    if (Array.isArray(data) && data.length === 6 &&
+        data.every(p => typeof p.name === "string" && typeof p.total === "number")) {
+      return data;
+    }
+  } catch (e) {}
+  return null;
+}
+
+function save() {
+  localStorage.setItem(PERSON_KEY, JSON.stringify(state.personen));
+}
+
+function fmt(seconds) {
+  const s = Math.floor(seconds);
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  if (m >= 60) {
+    const h = Math.floor(m / 60);
+    return String(h) + ":" + String(m % 60).padStart(2, "0") + ":" + String(r).padStart(2, "0");
+  }
+  return String(m).padStart(2, "0") + ":" + String(r).padStart(2, "0");
+}
+
+function currentSeconds(idx) {
+  return state.personen[idx].total + (running === idx ? (Date.now() - startTs) / 1000 : 0);
+}
+
+const grid = document.getElementById("grid");
+const totalEl = document.getElementById("total");
+const cards = [];
+
+state.personen.forEach((p, i) => {
+  const card = document.createElement("button");
+  card.className = "person";
+  card.style.setProperty("--c", COLORS[i]);
+  card.setAttribute("aria-label", p.name + " Sprechzeit umschalten");
+
+  const active = document.createElement("span");
+  active.className = "active-label";
+  active.textContent = "● läuft";
+
+  const name = document.createElement("input");
+  name.className = "nameInput";
+  name.value = p.name;
+  name.placeholder = "Name " + (i + 1);
+  name.maxLength = 20;
+  name.setAttribute("aria-label", "Name von Person " + (i + 1));
+
+  const clock = document.createElement("div");
+  clock.className = "clock";
+  clock.textContent = "00:00";
+
+  const sum = document.createElement("div");
+  sum.className = "sum";
+  sum.textContent = "Summe 00:00";
+
+  const bar = document.createElement("div");
+  bar.className = "bar";
+
+  card.append(active, name, clock, sum, bar);
+  grid.appendChild(card);
+
+  name.addEventListener("input", () => {
+    state.personen[i].name = name.value;
+    save();
+  });
+  name.addEventListener("keydown", e => {
+    if (e.key === "Enter") name.blur();
+  });
+  name.addEventListener("click", e => e.stopPropagation());
+  name.addEventListener("pointerdown", e => e.stopPropagation());
+
+  card.addEventListener("click", () => toggle(i));
+
+  cards.push({ card, clock, sum, bar, name });
+});
+
+function toggle(idx) {
+  if (running === idx) {
+    finishRunning();
+  } else {
+    if (running !== null) finishRunning();
+    running = idx;
+    startTs = Date.now();
+  }
+  render();
+  save();
+}
+
+function finishRunning() {
+  state.personen[running].total += (Date.now() - startTs) / 1000;
+  running = null;
+}
+
+function stopAll() {
+  if (running !== null) finishRunning();
+  render();
+  save();
+}
+
+function render() {
+  let total = 0;
+  state.personen.forEach((p, i) => {
+    const secs = currentSeconds(i);
+    total += secs;
+    const c = cards[i];
+    c.name.value = p.name;
+    c.clock.textContent = fmt(secs);
+    c.sum.textContent = "Summe " + fmt(p.total);
+    c.bar.style.width = (running === i ? ((secs * 1000) % 60000) / 600 * 1 : 0) + "%";
+    c.card.classList.toggle("personActive", running === i);
+    if (running === i) {
+      c.card.style.background =
+        "linear-gradient(160deg, color-mix(in srgb, var(--c) 22%, var(--card)), var(--card))";
+    } else {
+      c.card.style.background = "";
+    }
+  });
+  totalEl.textContent = fmt(total);
+}
+
+const resetDialog = document.getElementById("confirmReset");
+document.getElementById("resetBtn").addEventListener("click", () => resetDialog.showModal());
+document.getElementById("cancelReset").addEventListener("click", () => resetDialog.close());
+document.getElementById("doReset").addEventListener("click", () => {
+  stopAll();
+  state.personen.forEach(p => { p.total = 0; });
+  save();
+  render();
+  resetDialog.close();
+});
+
+setInterval(() => {
+  if (running !== null) render();
+}, 250);
+
+render();
+</script>
+</body>
+</html>
